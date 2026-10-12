@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Urban Disaster Evacuation &amp; Smart Traffic Router</title>
+<style>
+  :root {
+    --bg:#111318; --panel:#2b2d31; --text:#e8eaed; --muted:#9aa0a6;
+    --accent:#1a73e8; --warn:#f4b400;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#202124; color:var(--text);
+         font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif; }
+  header { padding:14px 18px 4px; }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:2px 0 0; color:var(--muted); font-size:13px; }
+  .layout { display:flex; flex-wrap:wrap; gap:14px; padding:12px 18px 24px; }
+  .map-col { flex:1 1 560px; min-width:0; }
+  .panel { flex:0 0 320px; background:var(--panel); border-radius:10px; padding:14px;
+           max-width:100%; }
+  canvas { width:100%; height:auto; background:var(--bg); border-radius:10px;
+           display:block; touch-action:manipulation; }
+  .legend { display:flex; flex-wrap:wrap; gap:10px; margin-top:8px; font-size:12px; }
+  .legend span::before { content:""; display:inline-block; width:12px; height:12px;
+           margin-right:5px; vertical-align:-2px; background:var(--c); border-radius:2px; }
+  h2 { font-size:15px; margin:14px 0 6px; }
+  h2:first-child { margin-top:0; }
+  .row { display:flex; gap:8px; margin:6px 0; }
+  button { flex:1; border:0; border-radius:6px; padding:9px 10px; color:#fff;
+           font-weight:600; cursor:pointer; background:#5f6368; }
+  button.primary { background:var(--accent); }
+  button.active { background:var(--warn); color:#111; }
+  .metric { margin:6px 0; }
+  .metric small { display:block; color:var(--muted); font-size:11px; }
+  .metric b { font-size:14px; word-break:break-word; }
+  #start-label { color:var(--warn); font-weight:600; font-size:13px; }
+  #status { font-size:12px; color:var(--muted); min-height:16px; }
+  #status.err { color:#f28b82; }
+  #log { background:#1a1b1e; border-radius:6px; height:150px; overflow:auto; padding:6px;
+         font:11px Consolas,monospace; margin:0; list-style:none; }
+  #log li { padding:2px 0; border-bottom:1px solid #2b2d31; }
+  .hint { color:var(--muted); font-size:11px; margin-top:8px; line-height:1.4; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Urban Disaster Evacuation &amp; Smart Traffic Router</h1>
+  <p>Adjacency List &middot; Dijkstra with Min-Heap (Python on Vercel) &middot; Live hazard re-routing</p>
+</header>
+
+<div class="layout">
+  <div class="map-col">
+    <canvas id="map" width="900" height="610"></canvas>
+    <div class="legend">
+      <span style="--c:#9aa0a6">Normal road</span>
+      <span style="--c:#f4b400">Hazard 2x</span>
+      <span style="--c:#e07b00">Hazard 3x</span>
+      <span style="--c:#d93025">Blocked</span>
+      <span style="--c:#34a853">Shelter</span>
+      <span style="--c:#1a73e8">Evacuation route</span>
+    </div>
+  </div>
+
+  <aside class="panel">
+    <h2>Control Panel</h2>
+    <div id="start-label">Start node: (click a node)</div>
+    <div class="row">
+      <button id="tool-block" class="active" type="button">Road click: Block</button>
+      <button id="tool-hazard" type="button">Road click: Hazard</button>
+    </div>
+    <div class="row">
+      <button id="run" class="primary" type="button">Run Evacuation</button>
+      <button id="reset" type="button">Reset</button>
+    </div>
+    <div id="status"></div>
+
+    <h2>Live Analytics</h2>
+    <div class="metric"><small>Total travel time</small><b id="m-cost">--</b></div>
+    <div class="metric"><small>Nodes visited (Dijkstra pops)</small><b id="m-visited">--</b></div>
+    <div class="metric"><small>Dijkstra execution time (server)</small><b id="m-exec">--</b></div>
+    <div class="metric"><small>Network round-trip</small><b id="m-rtt">--</b></div>
+    <div class="metric"><small>Path</small><b id="m-path">--</b></div>
+
+    <h2>Path History Log</h2>
+    <ul id="log"></ul>
+    <div class="hint">Click a node = set start. Click a road = block/unblock (or cycle hazard, per the
+      toggle above). Right-click a road = cycle hazard 1x &rarr; 2x &rarr; 3x &rarr; 1x.
+      Every change re-routes automatically.</div>
+  </aside>
+</div>
+
+<script>
+"use strict";
+const API = "/api/route";
+const COLORS = { normal:"#9aa0a6", h2:"#f4b400", h3:"#e07b00", blocked:"#d93025",
+                 path:"#1a73e8", nodeNormal:"#cfd8dc", shelter:"#34a853", start:"#fbbc04" };
+const R = 18;
+
+const canvas = document.getElementById("map");
+const ctx = canvas.getContext("2d");
+const $ = (id) => document.getElementById(id);
+
+let map = null;                 // {nodes, edges, shelters} from the API
+let nodes = {};                 // id -> node
+let edges = [];                 // [{id, a, b, w}]
+let shelters = new Set();
+let start = null;
+let blocked = new Set();
+let hazards = {};               // edgeId -> multiplier (2 or 3)
+let path = [];
+let roadTool = "block";         // what a left-click on a road does
+let reqCounter = 0;             // ignore stale responses (rapid clicking)
+let animStart = 0;              // timestamp for path animation
+
+// ---------------------------------------------------------------- load map
+async function init() {
+  try {
+    const res = await fetch(API);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    map = await res.json();
+  } catch (e) {
+    setStatus("Could not load map from /api/route (" + e.message + "). " +
+              "Run with `vercel dev` or deploy to Vercel.", true);
+    return;
+  }
+  nodes = Object.fromEntries(map.nodes.map(n => [n.id, n]));
+  shelters = new Set(map.shelters);
+  edges = map.edges.map(e => ({ id: e.from + "-" + e.to, a: e.from, b: e.to, w: e.weight }));
+  draw();
+}
+
+// ---------------------------------------------------------------- drawing
+function roadColor(id) {
+  if (blocked.has(id)) return COLORS.blocked;
+  const h = hazards[id] || 1;
+  return h >= 3 ? COLORS.h3 : h >= 2 ? COLORS.h2 : COLORS.normal;
+}
+
+function draw(progress = 1) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (const e of edges) {
+    const a = nodes[e.a], b = nodes[e.b];
+    ctx.strokeStyle = roadColor(e.id);
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    const h = hazards[e.id] || 1;
+    ctx.fillStyle = "#8a9096"; ctx.font = "11px Segoe UI, sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(h > 1 ? e.w + " x" + h : String(e.w), (a.x + b.x) / 2, (a.y + b.y) / 2 - 8);
+  }
+
+  // Animated evacuation route: draw `progress` (0..1) of the total segments.
+  if (path.length > 1) {
+    const total = path.length - 1;
+    const upTo = progress * total;
+    ctx.strokeStyle = COLORS.path; ctx.lineWidth = 7; ctx.lineCap = "round";
+    for (let i = 0; i < total && i < upTo; i++) {
+      const a = nodes[path[i]], b = nodes[path[i + 1]];
+      const t = Math.min(1, upTo - i);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y);
+      ctx.lineTo(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t); ctx.stroke();
+    }
+    ctx.lineCap = "butt";
+  }
+
+  for (const n of map.nodes) {
+    ctx.beginPath(); ctx.arc(n.x, n.y, R, 0, Math.PI * 2);
+    ctx.fillStyle = n.id === start ? COLORS.start : shelters.has(n.id) ? COLORS.shelter : COLORS.nodeNormal;
+    ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = "#111318"; ctx.stroke();
+    ctx.fillStyle = "#111318"; ctx.font = "bold 12px Segoe UI, sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(n.id, n.x, n.y);
+    ctx.fillStyle = "#e8eaed"; ctx.font = "11px Segoe UI, sans-serif";
+    ctx.fillText(n.label, n.x, n.y + R + 12);
+    ctx.textBaseline = "alphabetic";
+  }
+}
+
+function animatePath() {
+  const t0 = performance.now();
+  const dur = 120 * Math.max(1, path.length - 1);
+  (function frame(now) {
+    const p = Math.min(1, (now - t0) / dur);
+    draw(p);
+    if (p < 1) requestAnimationFrame(frame);
+  })(t0);
+}
+
+// ---------------------------------------------------------------- hit testing
+function toCanvasXY(evt) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (evt.clientX - r.left) * canvas.width / r.width,
+           y: (evt.clientY - r.top) * canvas.height / r.height };
+}
+function hitNode(p) {
+  for (const n of map.nodes) if (Math.hypot(p.x - n.x, p.y - n.y) <= R + 4) return n.id;
+  return null;
+}
+function distToSegment(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+function hitEdge(p) {
+  let best = null, bestD = 12;            // 12px click tolerance
+  for (const e of edges) {
+    const d = distToSegment(p, nodes[e.a], nodes[e.b]);
+    if (d < bestD) { bestD = d; best = e.id; }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------- hazard actions
+function toggleBlock(id) { blocked.has(id) ? blocked.delete(id) : blocked.add(id); }
+function cycleHazard(id) {
+  const next = { 1: 2, 2: 3, 3: 1 }[hazards[id] || 1];
+  if (next === 1) delete hazards[id]; else hazards[id] = next;
+}
+
+canvas.addEventListener("click", (evt) => {
+  if (!map) return;
+  const p = toCanvasXY(evt);
+  const n = hitNode(p);
+  if (n) { start = n; $("start-label").textContent = "Start node: " + n + " (" + nodes[n].label + ")"; }
+  else {
+    const e = hitEdge(p);
+    if (!e) return;
+    roadTool === "block" ? toggleBlock(e) : cycleHazard(e);
+  }
+  reroute();
+});
+canvas.addEventListener("contextmenu", (evt) => {
+  evt.preventDefault();
+  if (!map) return;
+  const e = hitEdge(toCanvasXY(evt));
+  if (e) { cycleHazard(e); reroute(); }
+});
+
+// ---------------------------------------------------------------- routing (calls Python)
+async function reroute(showAlert = false) {
+  if (!start) {
+    draw();
+    if (showAlert) setStatus("Click a node on the map first to set the start point.", true);
+    return;
+  }
+  const myReq = ++reqCounter;
+  const t0 = performance.now();
+  let data;
+  try {
+    const res = await fetch(API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ start, blocked: [...blocked], hazards })
+    });
+    data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || "HTTP " + res.status);
+  } catch (e) {
+    setStatus("Routing failed: " + e.message, true);
+    return;
+  }
+  if (myReq !== reqCounter) return;       // a newer click already superseded this one
+  const rtt = performance.now() - t0;
+  setStatus("");
+
+  path = data.path || [];
+  $("m-visited").textContent = data.visited;
+  $("m-exec").textContent = data.elapsed_ms.toFixed(3) + " ms";
+  $("m-rtt").textContent = rtt.toFixed(0) + " ms";
+
+  if (!data.path) {
+    $("m-cost").textContent = "N/A";
+    $("m-path").textContent = "No safe route available (all paths blocked)";
+    addLog("[" + start + "] NO ROUTE FOUND (fully blocked)");
+    draw();
+  } else {
+    $("m-cost").textContent = data.cost.toFixed(1) + " min";
+    $("m-path").textContent = path.join(" \u2192 ");
+    addLog("[" + start + " \u2192 " + path[path.length - 1] + "] cost=" + data.cost.toFixed(1) +
+           " visited=" + data.visited + " time=" + data.elapsed_ms.toFixed(3) + "ms path=" + path.join("->"));
+    animatePath();
+  }
+}
+
+function addLog(text) {
+  const li = document.createElement("li"); li.textContent = text;
+  $("log").prepend(li);
+}
+function setStatus(msg, isErr = false) {
+  const s = $("status"); s.textContent = msg; s.className = isErr ? "err" : "";
+}
+
+// ---------------------------------------------------------------- controls
+$("run").onclick = () => reroute(true);
+$("reset").onclick = () => { blocked.clear(); hazards = {}; path = []; reroute(); draw(); };
+function setTool(t) {
+  roadTool = t;
+  $("tool-block").classList.toggle("active", t === "block");
+  $("tool-hazard").classList.toggle("active", t === "hazard");
+}
+$("tool-block").onclick = () => setTool("block");
+$("tool-hazard").onclick = () => setTool("hazard");
+
+init();
+</script>
+</body>
+</html>

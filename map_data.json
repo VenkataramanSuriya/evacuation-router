@@ -1,0 +1,43 @@
+{
+  "city_name": "Rivermead District",
+  "nodes": [
+    { "id": "A", "label": "Northgate Ave",      "x": 120, "y": 90,  "type": "normal" },
+    { "id": "B", "label": "Central Sq",         "x": 340, "y": 90,  "type": "normal" },
+    { "id": "C", "label": "Market Cross",       "x": 560, "y": 90,  "type": "normal" },
+    { "id": "D", "label": "Highland Shelter",   "x": 780, "y": 90,  "type": "shelter" },
+    { "id": "E", "label": "Elm Street",         "x": 120, "y": 300, "type": "normal" },
+    { "id": "F", "label": "Fifth & Main",       "x": 340, "y": 300, "type": "normal" },
+    { "id": "G", "label": "Grand Junction",     "x": 560, "y": 300, "type": "normal" },
+    { "id": "H", "label": "Harbor Road",        "x": 780, "y": 300, "type": "normal" },
+    { "id": "I", "label": "Ironbridge Shelter", "x": 120, "y": 510, "type": "shelter" },
+    { "id": "J", "label": "Jubilee Park",       "x": 340, "y": 510, "type": "normal" },
+    { "id": "K", "label": "King's Cross Shelter","x": 560, "y": 510, "type": "shelter" },
+    { "id": "L", "label": "Lakeside Ave",       "x": 780, "y": 510, "type": "normal" }
+  ],
+  "edges": [
+    { "from": "A", "to": "B", "weight": 4 },
+    { "from": "B", "to": "C", "weight": 3 },
+    { "from": "C", "to": "D", "weight": 5 },
+    { "from": "E", "to": "F", "weight": 4 },
+    { "from": "F", "to": "G", "weight": 3 },
+    { "from": "G", "to": "H", "weight": 5 },
+    { "from": "I", "to": "J", "weight": 4 },
+    { "from": "J", "to": "K", "weight": 3 },
+    { "from": "K", "to": "L", "weight": 5 },
+    { "from": "A", "to": "E", "weight": 6 },
+    { "from": "E", "to": "I", "weight": 6 },
+    { "from": "B", "to": "F", "weight": 5 },
+    { "from": "F", "to": "J", "weight": 5 },
+    { "from": "C", "to": "G", "weight": 5 },
+    { "from": "G", "to": "K", "weight": 5 },
+    { "from": "D", "to": "H", "weight": 6 },
+    { "from": "H", "to": "L", "weight": 6 },
+    { "from": "B", "to": "E", "weight": 7 },
+    { "from": "F", "to": "I", "weight": 7 },
+    { "from": "C", "to": "F", "weight": 4 },
+    { "from": "G", "to": "J", "weight": 4 },
+    { "from": "D", "to": "G", "weight": 6 },
+    { "from": "H", "to": "K", "weight": 6 }
+  ],
+  "shelters": ["D", "I", "K"]
+}
